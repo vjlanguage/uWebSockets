@@ -29,6 +29,10 @@ struct Loop {
 private:
     static void wakeupCb(us_loop_t *loop) {
         LoopData *loopData = (LoopData *) us_loop_ext(loop);
+        if (loopData->profileWakeCallback) {
+            loopData->wakeCallbackEntered = std::chrono::steady_clock::now();
+            loopData->wakeBlockerType = us_loop_wake_blocker_type(loop);
+        }
 
         /* Swap current deferQueue */
         loopData->deferMutex.lock();
@@ -36,7 +40,13 @@ private:
         loopData->currentDeferQueue = (loopData->currentDeferQueue + 1) % 2;
         loopData->deferMutex.unlock();
 
-        /* Drain the queue */
+        /* Drain owner completions before callbacks that may run long tasks. */
+        for (auto &p : loopData->wakeHandlers) {
+            p.second((Loop *) loop);
+        }
+
+        /* Keep the swapped queue as this turn's snapshot. Deferred callbacks
+         * posted by wake handlers stay in the other queue for the next wake. */
         for (auto &x : loopData->deferQueues[oldDeferQueue]) {
             x();
         }
@@ -106,6 +116,44 @@ private:
     }
 
 public:
+    void setWakeCallbackProfiling(bool enabled) {
+        LoopData *loopData = (LoopData *) us_loop_ext((us_loop_t *) this);
+        loopData->profileWakeCallback = enabled;
+        loopData->wakeCallbackEntered = {};
+        loopData->wakeBlockerType = -1;
+        us_loop_set_wake_blocker_profiling((us_loop_t *) this, enabled);
+    }
+
+    std::chrono::steady_clock::time_point wakeCallbackEntered() const {
+        LoopData *loopData = (LoopData *) us_loop_ext((us_loop_t *) this);
+        return loopData->wakeCallbackEntered;
+    }
+
+    int wakeBlockerType() const {
+        LoopData *loopData = (LoopData *) us_loop_ext((us_loop_t *) this);
+        return loopData->wakeBlockerType;
+    }
+
+    bool hasDeferredCallbacksForCurrentWake() const {
+        LoopData *loopData = (LoopData *) us_loop_ext((us_loop_t *) this);
+        // wakeupCb has already swapped queues. Producers can only append to
+        // the new current queue, so this wake's snapshot is owner-thread only.
+        const int wakeQueue = (loopData->currentDeferQueue + 1) % 2;
+        return !loopData->deferQueues[wakeQueue].empty();
+    }
+
+    void addWakeHandler(void *key, MoveOnlyFunction<void(Loop *)> &&handler) {
+        LoopData *loopData = (LoopData *) us_loop_ext((us_loop_t *) this);
+
+        loopData->wakeHandlers.emplace(key, std::move(handler));
+    }
+
+    void removeWakeHandler(void *key) {
+        LoopData *loopData = (LoopData *) us_loop_ext((us_loop_t *) this);
+
+        loopData->wakeHandlers.erase(key);
+    }
+
     /* Lazily initializes a per-thread loop and returns it.
      * Will automatically free all initialized loops at exit. */
     static Loop *get(void *existingNativeLoop = nullptr) {

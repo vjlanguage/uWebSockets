@@ -220,6 +220,9 @@ private:
     }
 
 public:
+    // Read-only transport output ownership query for graceful drain.
+    unsigned int pendingOutputBytes() { return Super::getBufferedAmount(); }
+
     /* If we have proxy support; returns the proxed source address as reported by the proxy. */
 #ifdef UWS_WITH_PROXY
     std::string_view getProxiedRemoteAddress() {

@@ -25,6 +25,7 @@
 #include <map>
 #include <ctime>
 #include <cstdint>
+#include <chrono>
 
 #include "PerMessageDeflate.h"
 #include "MoveOnlyFunction.h"
@@ -43,7 +44,10 @@ private:
     std::vector<MoveOnlyFunction<void()>> deferQueues[2];
 
     /* Map from void ptr to handler */
-    std::map<void *, MoveOnlyFunction<void(Loop *)>> postHandlers, preHandlers;
+    std::map<void *, MoveOnlyFunction<void(Loop *)>> postHandlers, preHandlers, wakeHandlers;
+    bool profileWakeCallback = false;
+    std::chrono::steady_clock::time_point wakeCallbackEntered{};
+    int wakeBlockerType = -1;
 
 public:
     LoopData() {
